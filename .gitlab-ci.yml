@@ -1,0 +1,54 @@
+# https://docs.gitlab.com/ee/user/packages/container_registry/build_and_push_images.html
+
+stages:
+  - deploy
+
+# Build docker image and push to Gitlab Container Registry
+push_to_gitlab_registry:
+  stage: deploy
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  variables:
+    IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG
+  script:
+    - docker --version
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build --pull -t $IMAGE_TAG --build-arg USER=gitlab-ci-token --build-arg PASS=$CI_JOB_TOKEN .
+    - docker push $IMAGE_TAG
+  rules:
+  - if: $CI_COMMIT_TAG
+
+
+# Build docker image and push to AWS ECR
+push_to_aws_ecr:
+  stage: deploy
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  services:
+    - docker:dind
+  variables:
+    ECR_REGISTRY: 079849106783.dkr.ecr.eu-west-3.amazonaws.com
+    ECR_REPOSITORY: $ECR_REGISTRY/$CI_PROJECT_NAME
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - aws --version
+    - docker --version
+    # Create AWS ECR repository if it does not exist
+    - aws ecr describe-repositories --repository-names $CI_PROJECT_NAME --region $AWS_DEFAULT_REGION || aws ecr create-repository --repository-name $CI_PROJECT_NAME --region $AWS_DEFAULT_REGION
+    # Authenticate Docker to registry, build image and push to repository 
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+    - docker build --pull -t $ECR_REPOSITORY:$CI_COMMIT_TAG --build-arg USER=gitlab-ci-token --build-arg PASS=$CI_JOB_TOKEN .
+    - docker push $ECR_REPOSITORY:$CI_COMMIT_TAG
+    # Update service/task
+  # Variable are protected and available only on main. Need to add protect tag wildcard.
+  rules:
+  - if: $CI_COMMIT_TAG
+
+# Get AWS ECS task definition 
+# Register new task revision
+# Get AWS ECS cluster
+# - TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition CI_PROJECT_NAME --region AWS_DEFAULT_REGION)
+# - NEW_CONTAINER_DEFINTIION=$(echo $TASK_DEFINITION | jq --arg IMAGE "$REPOSITORY_URL:$IMAGE_TAG" '.taskDefinition.containerDefinitions[0].image = $IMAGE | .taskDefinition.containerDefinitions[0]')
+# - aws ecs register-task-definition --region $AWS_DEFAULT_REGION --family $CI_PROJECT_NAME --container-definitions "${NEW_CONTAINER_DEFINTIION}"
